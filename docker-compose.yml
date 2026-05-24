@@ -1,0 +1,100 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: oilfield-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-oiluser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-oilpass}
+      POSTGRES_DB: ${POSTGRES_DB:-oilfield}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oiluser} -d ${POSTGRES_DB:-oilfield}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: oilfield-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin};
+      mc mb -p local/${MINIO_BUCKET:-oilfield-data} || true;
+      exit 0;
+      "
+
+  jupyter:
+    build:
+      context: ./jupyterhub
+    container_name: oilfield-jupyter
+    ports:
+      - "8888:8888"
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-oiluser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-oilpass}
+      POSTGRES_DB: ${POSTGRES_DB:-oilfield}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-oilfield-data}
+    volumes:
+      - ./notebooks:/home/jovyan/work/notebooks
+      - ./etl:/home/jovyan/work/etl
+      - ./ml:/home/jovyan/work/ml
+      - ./scripts:/home/jovyan/work/scripts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  superset:
+    image: apache/superset:3.1.0
+    container_name: oilfield-superset
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-oilfield_superset_secret}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-oiluser}:${POSTGRES_PASSWORD:-oilpass}@postgres:5432/${POSTGRES_DB:-oilfield}
+    volumes:
+      - ./superset:/app/superset_home/custom
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      /bin/sh -c "
+      superset db upgrade &&
+      superset fab create-admin --username admin --firstname Admin --lastname User --email admin@example.com --password admin || true &&
+      superset init &&
+      superset run -h 0.0.0.0 -p 8088
+      "
+
+volumes:
+  postgres_data:
+  minio_data:

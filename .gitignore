@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+data/
+minio_data/
+postgres_data/
+superset_home/
+*.parquet
+.venv/
+venv/
